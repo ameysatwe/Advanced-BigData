@@ -1,9 +1,11 @@
 {
   "name": "demo",
   "version": "1.0.0",
-  "main": "index.js",
+  "main": "app.js",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon app.js"
   },
   "keywords": [],
   "author": "",
@@ -11,7 +13,8 @@
   "description": "",
   "dependencies": {
     "ajv": "^8.17.1",
-    "express": "^5.1.0"
+    "express": "^5.1.0",
+    "redis": "^5.8.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.10"
