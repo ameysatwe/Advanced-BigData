@@ -90,7 +90,7 @@ planRouter.post("/", async (req, res) => {
     }
   });
   const response = await client.get(req.body["objectId"]);
-  res.set("Etag", etag(response));
+  res.set("Etag", etag(JSON.stringify(response)));
   return res.status(201).send(req.body);
 });
 
@@ -102,11 +102,9 @@ planRouter.get("/:id", async (req, res) => {
       return res.status(404).send("Not Found");
     }
     const etagRes = etag(JSON.stringify(resp));
-    // console.log(req.get("If-None-Match"));
-    // console.log(etagRes);
     if (
       req.get("If-None-Match") &&
-      etagRes == req.get("If-None-Match").toString()
+      etagRes.toString() == req.get("If-None-Match")
     ) {
       console.log("here");
       return res.status(304).send();
