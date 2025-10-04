@@ -97,16 +97,11 @@ planRouter.post("/", async (req, res) => {
 planRouter.get("/:id", async (req, res) => {
   try {
     const resp = await client.get(req.params.id);
-    // console.log(resp);
     if (resp == null) {
       return res.status(404).send("Not Found");
     }
     const etagRes = etag(JSON.stringify(resp));
-    if (
-      req.get("If-None-Match") &&
-      etagRes.toString() == req.get("If-None-Match")
-    ) {
-      console.log("here");
+    if (req.get("If-None-Match") && etagRes == req.get("If-None-Match")) {
       return res.status(304).send();
     }
     res.set("Etag", etagRes);
@@ -123,6 +118,7 @@ planRouter.delete("/:id", async (req, res) => {
     if (resp === 0) {
       return res.status(404).send("Not Found");
     }
+    // console.log("Deleted object ID " + req.params.id);
     return res.status(204).send();
   } catch (err) {
     console.log(err);
