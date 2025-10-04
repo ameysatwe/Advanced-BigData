@@ -3,7 +3,7 @@ import { redisClient } from "../service/redisClient.js";
 import Ajv from "ajv";
 import etag from "etag";
 
-const ajv = new Ajv();
+const ajv = new Ajv({ allErrors: true });
 
 const planRouter = express.Router();
 const client = redisClient;
@@ -75,23 +75,39 @@ const jsonSchema = {
     "creationDate",
   ],
 };
+const validate = ajv.compile(jsonSchema);
 planRouter.post("/", async (req, res) => {
+  // Validate request
   if (
     !req.body ||
     req.get("Content-length") == 0 ||
     !req.body["objectId"] ||
-    ajv.validate(jsonSchema, req.body) == false
+    validate(req.body) == false
   ) {
-    return res.status(400).send("Bad request");
+    // console.log("Bad request");
+    console.log(validate?.errors);
+    return res.status(400).json(validate?.errors);
   }
-  client.set(req.body["objectId"], JSON.stringify(req.body), (err, reply) => {
-    if (err) {
-      return res.status(500).send("Internal Server Error");
+
+  const key = req.body["objectId"];
+
+  try {
+    // Check if key already exists
+    const exists = await client.exists(key);
+    if (exists) {
+      return res.status(409).send("Conflict: object already exists");
     }
-  });
-  const response = await client.get(req.body["objectId"]);
-  res.set("Etag", etag(JSON.stringify(response)));
-  return res.status(201).send(req.body);
+
+    // Store data
+    await client.set(key, JSON.stringify(req.body));
+
+    const response = await client.get(key);
+    res.set("ETag", etag(JSON.stringify(response)));
+    return res.status(201).send(req.body);
+  } catch (err) {
+    console.error("Redis error:", err);
+    return res.status(500).send("Internal Server Error");
+  }
 });
 
 planRouter.get("/:id", async (req, res) => {
