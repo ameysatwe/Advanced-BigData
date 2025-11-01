@@ -143,83 +143,89 @@ planRouter.delete("/:id", verifyToken, async (req, res) => {
   }
 });
 
-planRouter.put("/plan/:id", verifyToken, async (req, res) => {
-  if (
-    req._body == false ||
-    req.get("Content-length") == 0 ||
-    !req.body["objectId"] ||
-    ajv.validate(dataSchema, req.body) == false
-  ) {
+planRouter.put("/:id", verifyToken, async (req, res) => {
+  if (!req.body || !req.body.objectId || !validate(req.body)) {
     return res.status(400).send("Bad Request");
   }
-  const response = await client.get(req.params.id);
-  if (response == null) {
-    return res.status(404).send("Not Found");
-  }
 
-  const etagRes = etag(JSON.stringify(resp));
+  try {
+    console.log("here");
+    const existing = await client.get(req.params.id);
+    if (!existing) return res.status(404).send("Not Found");
 
-  if (req.get("If-Match") !== etagRes) {
-    return res.status(412).send("Precondition Failed");
-  }
-
-  client.set(req.params.id, JSON.stringify(req.body), (err, reply) => {
-    if (err) {
-      return res.status(500).send();
+    const currentEtag = etag(existing);
+    if (req.get("If-Match") && req.get("If-Match") !== currentEtag) {
+      return res.status(412).send("Precondition Failed");
     }
-  });
-  res.set("Etag", etagRes);
-  return res.status(200).send(req.body);
+
+    await client.set(req.params.id, JSON.stringify(req.body));
+    const newTag = etag(JSON.stringify(req.body));
+    res.set("ETag", newTag);
+    return res.status(200).send(req.body);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).send("Internal Server Error");
+  }
 });
 
-planRouter.patch("/plan/:id", verifyToken, async (req, res) => {
-  if (
-    req._body == false ||
-    req.get("Content-length") == 0 ||
-    !req.body["objectId"] ||
-    ajv.validate(dataSchema, req.body) == false
-  ) {
+planRouter.patch("/:id", verifyToken, async (req, res) => {
+  if (!req.body || typeof req.body !== "object") {
     return res.status(400).send("Bad Request");
   }
-  const response = await client.get(req.params.id);
-  if (response == null) {
-    return res.status(404).send("Not Found");
-  }
-  const etagRes = etag(JSON.stringify(response));
-  if (req.get("If-Match") !== etagRes) {
-    return res.status(412).send("Precondition Failed");
-  }
 
-  const oldResponse = JSON.parse(response);
-  // const newResponse = {...oldResponse, ...req.body};
+  try {
+    const existing = await client.get(req.params.id);
+    if (!existing) return res.status(404).send("Not Found");
 
-  for (let [key, value] of Object.entries(req.body)) {
-    if (dataSchema.properties[key].type == "array") {
-      const oldArray = oldResponse[key];
-      const newArray = value;
-      for (let i = 0; i < newArray.length; i++) {
-        const oldData = oldArray.filter(
-          (item) => item.objectId == newArray[i].objectId
-        );
-        if (oldData.length == 0) {
-          oldArray.push(newArray[i]);
-        } else {
-          oldArray[oldArray.indexOf(oldData[0])] = newArray[i];
-        }
+    const oldResponse = JSON.parse(existing);
+    const currentEtag = etag(existing);
+
+    if (
+      req.get("If-Match") &&
+      req.get("If-Match") !== currentEtag &&
+      req.get("If-Match").length != 0
+    ) {
+      return res.status(412).send("Precondition Failed");
+    }
+    for (const [key, newValue] of Object.entries(req.body)) {
+      const schemaType = jsonSchema.properties[key]?.type;
+
+      if (schemaType === "array") {
+        const oldArray = oldResponse[key] || [];
+        const newArray = newValue || [];
+
+        newArray.forEach((newItem) => {
+          const index = oldArray.findIndex(
+            (oldItem) => oldItem.objectId === newItem.objectId
+          );
+
+          if (index === -1) {
+            // Item not found → add new one
+            oldArray.push(newItem);
+          } else {
+            // Item exists → replace with updated version
+            oldArray[index] = newItem;
+          }
+        });
+
+        oldResponse[key] = oldArray;
+      } else {
+        oldResponse[key] = newValue;
       }
-    } else {
-      oldResponse[key] = value;
     }
+
+    if (!validate(oldResponse)) {
+      return res.status(400).json(validate.errors);
+    }
+
+    await client.set(req.params.id, JSON.stringify(oldResponse));
+    const newTag = etag(JSON.stringify(oldResponse));
+    res.set("ETag", newTag);
+    return res.status(200).json(newTag);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).send("Internal Server Error");
   }
-  client.set(req.params.id, JSON.stringify(oldResponse), (err, reply) => {
-    if (err) {
-      return res.status(500).send();
-    }
-  });
-  // const etagRes = etagCreater(JSON.stringify(oldResponse));
-  const oldEtagRes = etag(JSON.stringify(oldResponse));
-  res.set("Etag", oldEtagRes);
-  return res.status(201).send(oldResponse);
 });
 
 export default planRouter;
