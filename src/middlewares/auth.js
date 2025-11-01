@@ -2,20 +2,27 @@ import { OAuth2Client } from "google-auth-library";
 const oauthClient = new OAuth2Client();
 
 const verifyToken = async (req, res, next) => {
-  if (req.headers["authorization"] === undefined) {
-    return res.status(400).send("authorization missing");
-  } else if (req.headers["authorization"].split(" ")[0] !== "Bearer") {
-    return res.status(400).send("Only Oauth2.0 is supported");
+  const authHeader = req.headers["authorization"];
+
+  if (!authHeader) {
+    return res.status(401).send("Authorization header missing");
   }
+
+  const [scheme, token] = authHeader.split(" ");
+
+  if (scheme !== "Bearer" || !token) {
+    return res.status(401).send("Invalid or missing Bearer token");
+  }
+
   try {
     const ticket = await oauthClient.verifyIdToken({
-      idToken: req.headers["authorization"].split(" ")[1],
+      idToken: token,
       audience: process.env.CLIENT_ID,
     });
-    const payload = ticket.getPayload();
+    req.user = ticket.getPayload(); // optional but useful for downstream routes
     next();
   } catch (err) {
-    console.log(err);
+    console.error("Token verification failed:", err);
     res.status(401).send("Unauthorized");
   }
 };
