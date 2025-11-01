@@ -19,7 +19,6 @@ const verifyToken = async (req, res, next) => {
       idToken: token,
       audience: process.env.CLIENT_ID,
     });
-    req.user = ticket.getPayload(); // optional but useful for downstream routes
     next();
   } catch (err) {
     console.error("Token verification failed:", err);

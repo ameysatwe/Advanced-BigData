@@ -221,7 +221,7 @@ planRouter.patch("/:id", verifyToken, async (req, res) => {
     await client.set(req.params.id, JSON.stringify(oldResponse));
     const newTag = etag(JSON.stringify(oldResponse));
     res.set("ETag", newTag);
-    return res.status(200).json(newTag);
+    return res.status(200).json(oldResponse);
   } catch (err) {
     console.error(err);
     return res.status(500).send("Internal Server Error");
