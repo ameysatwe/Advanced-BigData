@@ -1,7 +1,7 @@
-import ampq from "amqplib";
+import amqp from "amqplib";
 const QUEUE = "PUBSUB";
 const sender = (messageData) => {
-  ampq.connect("amqp://localhost", (error0, connection) => {
+  amqp.connect("amqp://localhost", (error0, connection) => {
     if (error0) {
       throw error0;
     }

@@ -5,13 +5,13 @@ import etag from "etag";
 import verifyToken from "../middlewares/auth.js";
 
 import sender from "../pubsub/sender.js";
-import rabbit from "../service/rabbitmq.service.js";
+import rabbit from "../service/rabbitmqService.js";
 
 import {
   storePlanGraph,
   retrievePlanGraph,
   deletePlanGraph,
-} from "../service/graph.service.js";
+} from "../service/graphService.js";
 
 const ajv = new Ajv({ allErrors: true });
 
