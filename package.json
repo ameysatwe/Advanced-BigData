@@ -12,7 +12,9 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@elastic/elasticsearch": "^7.17.14",
     "ajv": "^8.17.1",
+    "amqplib": "^0.10.9",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "google-auth-library": "^10.5.0",

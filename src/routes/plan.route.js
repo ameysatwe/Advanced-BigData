@@ -4,6 +4,9 @@ import Ajv from "ajv";
 import etag from "etag";
 import verifyToken from "../middlewares/auth.js";
 
+import sender from "../pubsub/sender.js";
+import rabbit from "../service/rabbitmq.service.js";
+
 const ajv = new Ajv({ allErrors: true });
 
 const planRouter = express.Router();
@@ -76,6 +79,122 @@ const jsonSchema = {
     "creationDate",
   ],
 };
+const flattenKeys = async (data) => {
+  const parentKey = `${data.objectType}:${data.objectId}`;
+  let newObj = {};
+  for (let [key, value] of Object.entries(data)) {
+    if (typeof value == "object" && !Array.isArray(value)) {
+      const newKey = `${parentKey}:${key}`;
+      const res = await flattenKeys(value);
+      await client.set(newKey, JSON.stringify(res), (err, reply) => {
+        if (err) {
+          return res.status(500).send();
+        }
+      });
+      newObj[key] = newKey;
+    } else if (Array.isArray(value)) {
+      // console.log(key + ' is an array')
+      let arr = [];
+      for (let i = 0; i < value.length; i++) {
+        arr.push(await flattenKeys(value[i]));
+      }
+      const newKey = `${parentKey}:${key}`;
+      await client.set(newKey, JSON.stringify(arr), (err, reply) => {
+        if (err) {
+          return res.status(500).send();
+        }
+      });
+      newObj[key] = newKey;
+    } else {
+      // console.log("remamining keys of the parent which are neither object nor array \n"+key+"\n")
+      newObj[key] = value;
+    }
+  }
+  // console.log(parentKey," = ",newObj)
+  await client.set(parentKey, JSON.stringify(newObj), (err, reply) => {
+    if (err) {
+      return res.status(500).send();
+    }
+  });
+  return parentKey;
+};
+
+const unflattenKeys = async (parentKey) => {
+  let response = await client.get(parentKey);
+  if (response == null) return null;
+  let data = JSON.parse(response);
+  // console.log("Data = ",data+"\n")
+  let newObj = {};
+  if (typeof data == "string") {
+    if (data.split(":").length > 1) {
+      return unflattenKeys(data);
+    }
+  } else if (Array.isArray(data)) {
+    let arr = [];
+    for (let i = 0; i < data.length; i++) {
+      if (data[i].split(":").length > 1) {
+        const res = await unflattenKeys(data[i]);
+        arr.push(res);
+      }
+      // const res= await unflattenKeys(data[i]);
+      // arr.push(res);
+    }
+    return arr;
+  }
+  for (let [key, value] of Object.entries(data)) {
+    if (typeof value == "string") {
+      value.split(":").length > 1
+        ? (newObj[key] = await unflattenKeys(value))
+        : (newObj[key] = value);
+    } else if (Array.isArray(value)) {
+      let arr = [];
+      for (let i = 0; i < value.length; i++) {
+        const res = await unflattenKeys(value[i]);
+        arr.push(res);
+      }
+      newObj[key] = arr;
+    } else {
+      newObj[key] = value;
+    }
+  }
+  return newObj;
+};
+
+const deleteAllKeys = async (parentKey) => {
+  const res = await client.get(parentKey);
+  const data = JSON.parse(res);
+  // console.log(`${parentKey} = ${data}`)
+  if (data == null) return;
+  if (typeof data == "string") {
+    if (data.split(":").length > 1) {
+      await deleteAllKeys(data);
+    }
+    // return ;
+  } else if (Array.isArray(data)) {
+    for (let i = 0; i < data.length; i++) {
+      if (data[i].split(":").length > 1) {
+        await deleteAllKeys(data[i]);
+      }
+    }
+    // return ;
+  } else {
+    for (let [key, value] of Object.entries(data)) {
+      if (typeof value == "string") {
+        if (value.split(":").length > 1) {
+          await deleteAllKeys(value);
+        }
+      } else if (Array.isArray(value)) {
+        for (let i = 0; i < value.length; i++) {
+          await deleteAllKeys(value[i]);
+        }
+      }
+    }
+  }
+  // if(await client.exists(parentKey) == 1){
+  await client.del(parentKey);
+  // }
+  // await client.del(parentKey);
+};
 const validate = ajv.compile(jsonSchema);
 planRouter.post("/", verifyToken, async (req, res) => {
   // Validate request
@@ -90,7 +209,9 @@ planRouter.post("/", verifyToken, async (req, res) => {
     return res.status(400).json(validate?.errors);
   }
 
-  const key = req.body["objectId"];
+  // constke = req.body["objectId"];
+
+  const key = `plan:${req.body.objectId}`;
 
   try {
     // Check if key already exists
@@ -100,10 +221,14 @@ planRouter.post("/", verifyToken, async (req, res) => {
     }
 
     // Store data
-    await client.set(key, JSON.stringify(req.body));
+    // await client.set(key, JSON.stringify(req.body));
+
+    await flattenKeys(req.body);
 
     const response = await client.get(key);
     res.set("ETag", etag(JSON.stringify(response)));
+    const message = { operation: "STORE", body: req.body };
+    rabbit.producer(message);
     return res.status(201).send(req.body);
   } catch (err) {
     console.error("Redis error:", err);
@@ -113,7 +238,8 @@ planRouter.post("/", verifyToken, async (req, res) => {
 
 planRouter.get("/:id", verifyToken, async (req, res) => {
   try {
-    const resp = await client.get(req.params.id);
+    const key = `plan:${req.params.id}`;
+    const resp = await unflattenKeys(key);
     if (resp == null) {
       return res.status(404).send("Not Found");
     }
@@ -122,7 +248,7 @@ planRouter.get("/:id", verifyToken, async (req, res) => {
       return res.status(304).send();
     }
     res.set("Etag", etagRes);
-    return res.status(200).send(JSON.parse(resp));
+    return res.status(200).send(resp);
   } catch (err) {
     console.log(err);
     return res.status(500).send("Internal Server Error");
@@ -131,11 +257,15 @@ planRouter.get("/:id", verifyToken, async (req, res) => {
 
 planRouter.delete("/:id", verifyToken, async (req, res) => {
   try {
-    const resp = await client.del(req.params.id);
-    if (resp === 0) {
+    const key = `plan:${req.params.id}`;
+    if ((await client.exists(key)) === 0) {
       return res.status(404).send("Not Found");
     }
-    // console.log("Deleted object ID " + req.params.id);
+    const clientData = await unflattenKeys(key);
+    await deleteAllKeys(key);
+
+    const message = { operation: "DELETE", body: clientData };
+    rabbit.producer(message);
     return res.status(204).send();
   } catch (err) {
     console.log(err);
@@ -153,7 +283,7 @@ planRouter.put("/:id", verifyToken, async (req, res) => {
     const existing = await client.get(req.params.id);
     if (!existing) return res.status(404).send("Not Found");
 
-    const currentEtag = etag(existing);
+    const currentEtag = etag(JSON.stringify(existing));
     if (req.get("If-Match") && req.get("If-Match") !== currentEtag) {
       return res.status(412).send("Precondition Failed");
     }
@@ -178,13 +308,10 @@ planRouter.patch("/:id", verifyToken, async (req, res) => {
     if (!existing) return res.status(404).send("Not Found");
 
     const oldResponse = JSON.parse(existing);
-    const currentEtag = etag(existing);
+    const currentEtag = etag(JSON.stringify(existing));
+    console.log(currentEtag);
 
-    if (
-      req.get("If-Match") &&
-      req.get("If-Match") !== currentEtag &&
-      req.get("If-Match").length != 0
-    ) {
+    if (req.get("If-Match") && req.get("If-Match") !== currentEtag) {
       return res.status(412).send("Precondition Failed");
     }
     for (const [key, newValue] of Object.entries(req.body)) {
@@ -221,6 +348,7 @@ planRouter.patch("/:id", verifyToken, async (req, res) => {
     await client.set(req.params.id, JSON.stringify(oldResponse));
     const newTag = etag(JSON.stringify(oldResponse));
     res.set("ETag", newTag);
+    rabbit.producer({ operation: "STORE", body: oldResponse });
     return res.status(200).json(oldResponse);
   } catch (err) {
     console.error(err);
