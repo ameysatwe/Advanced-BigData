@@ -1,4 +1,4 @@
-import express from "express";
+import express, { json } from "express";
 import { redisClient } from "../service/redisClient.js";
 import Ajv from "ajv";
 import etag from "etag";
@@ -6,6 +6,12 @@ import verifyToken from "../middlewares/auth.js";
 
 import sender from "../pubsub/sender.js";
 import rabbit from "../service/rabbitmq.service.js";
+
+import {
+  storePlanGraph,
+  retrievePlanGraph,
+  deletePlanGraph,
+} from "../service/graph.service.js";
 
 const ajv = new Ajv({ allErrors: true });
 
@@ -79,122 +85,6 @@ const jsonSchema = {
     "creationDate",
   ],
 };
-const flattenKeys = async (data) => {
-  const parentKey = `${data.objectType}:${data.objectId}`;
-  let newObj = {};
-  for (let [key, value] of Object.entries(data)) {
-    if (typeof value == "object" && !Array.isArray(value)) {
-      const newKey = `${parentKey}:${key}`;
-      const res = await flattenKeys(value);
-      await client.set(newKey, JSON.stringify(res), (err, reply) => {
-        if (err) {
-          return res.status(500).send();
-        }
-      });
-      newObj[key] = newKey;
-    } else if (Array.isArray(value)) {
-      // console.log(key + ' is an array')
-      let arr = [];
-      for (let i = 0; i < value.length; i++) {
-        arr.push(await flattenKeys(value[i]));
-      }
-      const newKey = `${parentKey}:${key}`;
-      await client.set(newKey, JSON.stringify(arr), (err, reply) => {
-        if (err) {
-          return res.status(500).send();
-        }
-      });
-      newObj[key] = newKey;
-    } else {
-      // console.log("remamining keys of the parent which are neither object nor array \n"+key+"\n")
-      newObj[key] = value;
-    }
-  }
-  // console.log(parentKey," = ",newObj)
-  await client.set(parentKey, JSON.stringify(newObj), (err, reply) => {
-    if (err) {
-      return res.status(500).send();
-    }
-  });
-  return parentKey;
-};
-
-const unflattenKeys = async (parentKey) => {
-  let response = await client.get(parentKey);
-  if (response == null) return null;
-  let data = JSON.parse(response);
-  // console.log("Data = ",data+"\n")
-  let newObj = {};
-  if (typeof data == "string") {
-    if (data.split(":").length > 1) {
-      return unflattenKeys(data);
-    }
-  } else if (Array.isArray(data)) {
-    let arr = [];
-    for (let i = 0; i < data.length; i++) {
-      if (data[i].split(":").length > 1) {
-        const res = await unflattenKeys(data[i]);
-        arr.push(res);
-      }
-      // const res= await unflattenKeys(data[i]);
-      // arr.push(res);
-    }
-    return arr;
-  }
-  for (let [key, value] of Object.entries(data)) {
-    if (typeof value == "string") {
-      value.split(":").length > 1
-        ? (newObj[key] = await unflattenKeys(value))
-        : (newObj[key] = value);
-    } else if (Array.isArray(value)) {
-      let arr = [];
-      for (let i = 0; i < value.length; i++) {
-        const res = await unflattenKeys(value[i]);
-        arr.push(res);
-      }
-      newObj[key] = arr;
-    } else {
-      newObj[key] = value;
-    }
-  }
-  return newObj;
-};
-
-const deleteAllKeys = async (parentKey) => {
-  const res = await client.get(parentKey);
-  const data = JSON.parse(res);
-  // console.log(`${parentKey} = ${data}`)
-  if (data == null) return;
-  if (typeof data == "string") {
-    if (data.split(":").length > 1) {
-      await deleteAllKeys(data);
-    }
-    // return ;
-  } else if (Array.isArray(data)) {
-    for (let i = 0; i < data.length; i++) {
-      if (data[i].split(":").length > 1) {
-        await deleteAllKeys(data[i]);
-      }
-    }
-    // return ;
-  } else {
-    for (let [key, value] of Object.entries(data)) {
-      if (typeof value == "string") {
-        if (value.split(":").length > 1) {
-          await deleteAllKeys(value);
-        }
-      } else if (Array.isArray(value)) {
-        for (let i = 0; i < value.length; i++) {
-          await deleteAllKeys(value[i]);
-        }
-      }
-    }
-  }
-  // if(await client.exists(parentKey) == 1){
-  await client.del(parentKey);
-  // }
-  // await client.del(parentKey);
-};
 const validate = ajv.compile(jsonSchema);
 planRouter.post("/", verifyToken, async (req, res) => {
   // Validate request
@@ -223,7 +113,7 @@ planRouter.post("/", verifyToken, async (req, res) => {
     // Store data
     // await client.set(key, JSON.stringify(req.body));
 
-    await flattenKeys(req.body);
+    await storePlanGraph(req.body);
 
     const response = await client.get(key);
     res.set("ETag", etag(JSON.stringify(response)));
@@ -239,7 +129,7 @@ planRouter.post("/", verifyToken, async (req, res) => {
 planRouter.get("/:id", verifyToken, async (req, res) => {
   try {
     const key = `plan:${req.params.id}`;
-    const resp = await unflattenKeys(key);
+    const resp = await retrievePlanGraph(key);
     if (resp == null) {
       return res.status(404).send("Not Found");
     }
@@ -261,8 +151,8 @@ planRouter.delete("/:id", verifyToken, async (req, res) => {
     if ((await client.exists(key)) === 0) {
       return res.status(404).send("Not Found");
     }
-    const clientData = await unflattenKeys(key);
-    await deleteAllKeys(key);
+    const clientData = await retrievePlanGraph(key);
+    await deletePlanGraph(key);
 
     const message = { operation: "DELETE", body: clientData };
     rabbit.producer(message);
@@ -298,60 +188,128 @@ planRouter.put("/:id", verifyToken, async (req, res) => {
   }
 });
 
+// planRouter.patch("/:id", verifyToken, async (req, res) => {
+//   if (!req.body || typeof req.body !== "object") {
+//     return res.status(400).send("Bad Request");
+//   }
+
+//   try {
+//     const existing = await client.get(req.params.id);
+//     if (!existing) return res.status(404).send("Not Found");
+
+//     const oldResponse = JSON.parse(existing);
+//     const currentEtag = etag(JSON.stringify(existing));
+//     console.log(currentEtag);
+
+//     if (req.get("If-Match") && req.get("If-Match") !== currentEtag) {
+//       return res.status(412).send("Precondition Failed");
+//     }
+//     for (const [key, newValue] of Object.entries(req.body)) {
+//       const schemaType = jsonSchema.properties[key]?.type;
+
+//       if (schemaType === "array") {
+//         const oldArray = oldResponse[key] || [];
+//         const newArray = newValue || [];
+
+//         newArray.forEach((newItem) => {
+//           const index = oldArray.findIndex(
+//             (oldItem) => oldItem.objectId === newItem.objectId
+//           );
+
+//           if (index === -1) {
+//             // Item not found → add new one
+//             oldArray.push(newItem);
+//           } else {
+//             // Item exists → replace with updated version
+//             oldArray[index] = newItem;
+//           }
+//         });
+
+//         oldResponse[key] = oldArray;
+//       } else {
+//         oldResponse[key] = newValue;
+//       }
+//     }
+
+//     if (!validate(oldResponse)) {
+//       return res.status(400).json(validate.errors);
+//     }
+
+//     await client.set(req.params.id, JSON.stringify(oldResponse));
+//     const newTag = etag(JSON.stringify(oldResponse));
+//     res.set("ETag", newTag);
+//     rabbit.producer({ operation: "STORE", body: oldResponse });
+//     return res.status(200).json(oldResponse);
+//   } catch (err) {
+//     console.error(err);
+//     return res.status(500).send("Internal Server Error");
+//   }
+// });
+
 planRouter.patch("/:id", verifyToken, async (req, res) => {
-  if (!req.body || typeof req.body !== "object") {
+  console.log(req.body);
+  const isEmpty = req._body === false || req.get("Content-Length") === "0";
+
+  if (isEmpty || !req.body.objectId || !ajv.validate(jsonSchema, req.body)) {
     return res.status(400).send("Bad Request");
   }
 
+  const parentKey = `plan:${req.params.id}`;
+  console.log("data", parentKey);
   try {
-    const existing = await client.get(req.params.id);
-    if (!existing) return res.status(404).send("Not Found");
+    // Retrieve existing full plan graph
+    const currentData = await retrievePlanGraph(parentKey);
+    console.log("data", currentData);
+    if (!currentData) {
+      return res.status(404).send("Not Found");
+    }
 
-    const oldResponse = JSON.parse(existing);
-    const currentEtag = etag(JSON.stringify(existing));
-    console.log(currentEtag);
-
-    if (req.get("If-Match") && req.get("If-Match") !== currentEtag) {
+    // ETag precondition check
+    const currentEtag = etag(JSON.stringify(currentData));
+    if (req.get("If-Match") !== currentEtag) {
       return res.status(412).send("Precondition Failed");
     }
+
+    // Copy the data so updates apply cleanly
+    const updatedData = await retrievePlanGraph(parentKey);
+
+    // Apply incoming patch fields
     for (const [key, newValue] of Object.entries(req.body)) {
       const schemaType = jsonSchema.properties[key]?.type;
 
       if (schemaType === "array") {
-        const oldArray = oldResponse[key] || [];
-        const newArray = newValue || [];
+        const originalArray = updatedData[key] ?? [];
+        const incomingArray = newValue ?? [];
 
-        newArray.forEach((newItem) => {
-          const index = oldArray.findIndex(
-            (oldItem) => oldItem.objectId === newItem.objectId
+        incomingArray.forEach((item) => {
+          const idx = originalArray.findIndex(
+            (e) => e.objectId === item.objectId
           );
 
-          if (index === -1) {
-            // Item not found → add new one
-            oldArray.push(newItem);
+          if (idx === -1) {
+            originalArray.push(item);
           } else {
-            // Item exists → replace with updated version
-            oldArray[index] = newItem;
+            originalArray[idx] = item;
           }
         });
-
-        oldResponse[key] = oldArray;
       } else {
-        oldResponse[key] = newValue;
+        updatedData[key] = newValue;
       }
     }
 
-    if (!validate(oldResponse)) {
-      return res.status(400).json(validate.errors);
-    }
+    // Store updated graph back into Redis
+    await storePlanGraph(updatedData);
 
-    await client.set(req.params.id, JSON.stringify(oldResponse));
-    const newTag = etag(JSON.stringify(oldResponse));
-    res.set("ETag", newTag);
-    rabbit.producer({ operation: "STORE", body: oldResponse });
-    return res.status(200).json(oldResponse);
-  } catch (err) {
-    console.error(err);
+    // New ETag
+    const newEtag = etag(JSON.stringify(updatedData));
+    res.set("ETag", newEtag);
+
+    // Publish event
+    rabbit.producer({ operation: "STORE", body: updatedData });
+
+    return res.status(201).json(updatedData);
+  } catch (error) {
+    console.error("PATCH error:", error);
     return res.status(500).send("Internal Server Error");
   }
 });
