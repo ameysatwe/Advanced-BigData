@@ -245,13 +245,28 @@ planRouter.put("/:id", verifyToken, async (req, res) => {
 //     return res.status(500).send("Internal Server Error");
 //   }
 // });
+const patchSchema = {
+  type: "object",
+  properties: {
+    planCostShares: { type: "object" },
+    linkedPlanServices: { type: "array" },
+    _org: { type: "string" },
+    objectId: { type: "string" },
+    objectType: { type: "string" },
+    planType: { type: "string" },
+    creationDate: { type: "string" },
+  },
+  additionalProperties: false,
+};
+
+const validatePatch = ajv.compile(patchSchema);
 
 planRouter.patch("/:id", verifyToken, async (req, res) => {
   console.log(req.body);
   const isEmpty = req._body === false || req.get("Content-Length") === "0";
 
-  if (isEmpty || !req.body.objectId || !ajv.validate(jsonSchema, req.body)) {
-    return res.status(400).send("Bad Request");
+  if (!validatePatch(req.body)) {
+    return res.status(400).json(validatePatch.errors);
   }
 
   const parentKey = `plan:${req.params.id}`;
@@ -266,6 +281,7 @@ planRouter.patch("/:id", verifyToken, async (req, res) => {
 
     // ETag precondition check
     const currentEtag = etag(JSON.stringify(currentData));
+    console.log(currentEtag);
     if (req.get("If-Match") !== currentEtag) {
       return res.status(412).send("Precondition Failed");
     }
@@ -307,7 +323,7 @@ planRouter.patch("/:id", verifyToken, async (req, res) => {
     // Publish event
     rabbit.producer({ operation: "STORE", body: updatedData });
 
-    return res.status(201).json(updatedData);
+    return res.status(200).json(updatedData);
   } catch (error) {
     console.error("PATCH error:", error);
     return res.status(500).send("Internal Server Error");

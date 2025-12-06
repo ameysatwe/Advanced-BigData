@@ -1,40 +1,88 @@
 import { redisClient as client } from "./redisClient.js";
 
-export const storePlanGraph = async (data) => {
-  const parentKey = `${data.objectType}:${data.objectId}`;
-  let newObj = {};
-  for (let [key, value] of Object.entries(data)) {
-    if (typeof value == "object" && !Array.isArray(value)) {
-      const newKey = `${parentKey}:${key}`;
-      const res = await storePlanGraph(value);
-      await client.set(newKey, JSON.stringify(res), (err, reply) => {
-        if (err) {
-          return res.status(500).send();
-        }
-      });
-      newObj[key] = newKey;
-    } else if (Array.isArray(value)) {
-      let arr = [];
-      for (let i = 0; i < value.length; i++) {
-        arr.push(await storePlanGraph(value[i]));
+// export const storePlanGraph = async (data) => {
+//   const parentKey = `${data.objectType}:${data.objectId}`;
+//   let newObj = {};
+//   for (let [key, value] of Object.entries(data)) {
+//     if (typeof value == "object" && !Array.isArray(value)) {
+//       const newKey = `${parentKey}:${key}`;
+//       const res = await storePlanGraph(value);
+//       await client.set(newKey, JSON.stringify(res), (err, reply) => {
+//         if (err) {
+//           return res.status(500).send();
+//         }
+//       });
+//       newObj[key] = newKey;
+//     } else if (Array.isArray(value)) {
+//       let arr = [];
+//       for (let i = 0; i < value.length; i++) {
+//         arr.push(await storePlanGraph(value[i]));
+//       }
+//       const newKey = `${parentKey}:${key}`;
+//       await client.set(newKey, JSON.stringify(arr), (err, reply) => {
+//         if (err) {
+//           return res.status(500).send();
+//         }
+//       });
+//       newObj[key] = newKey;
+//     } else {
+//       newObj[key] = value;
+//     }
+//   }
+//   await client.set(parentKey, JSON.stringify(newObj), (err, reply) => {
+//     if (err) {
+//       return res.status(500).send();
+//     }
+//   });
+//   return parentKey;
+// };
+
+export const storePlanGraph = async (
+  obj,
+  parentType = null,
+  parentId = null
+) => {
+  // Only domain objects (with objectId + objectType) become Redis keys
+  if (!obj.objectId || !obj.objectType) return null;
+
+  const key = `${obj.objectType}:${obj.objectId}`;
+  const storedObj = {};
+
+  for (const [field, value] of Object.entries(obj)) {
+    // Child array (e.g., linkedPlanServices)
+    if (Array.isArray(value)) {
+      const refs = [];
+      for (const child of value) {
+        const childKey = await storePlanGraph(
+          child,
+          obj.objectType,
+          obj.objectId
+        );
+        refs.push(childKey);
       }
-      const newKey = `${parentKey}:${key}`;
-      await client.set(newKey, JSON.stringify(arr), (err, reply) => {
-        if (err) {
-          return res.status(500).send();
-        }
-      });
-      newObj[key] = newKey;
-    } else {
-      newObj[key] = value;
+      storedObj[field] = refs;
+    }
+
+    // Nested domain object
+    else if (typeof value === "object" && value !== null) {
+      const childKey = await storePlanGraph(
+        value,
+        obj.objectType,
+        obj.objectId
+      );
+      storedObj[field] = childKey;
+    }
+
+    // Primitive field
+    else {
+      storedObj[field] = value;
     }
   }
-  await client.set(parentKey, JSON.stringify(newObj), (err, reply) => {
-    if (err) {
-      return res.status(500).send();
-    }
-  });
-  return parentKey;
+
+  // Store final object in Redis
+  await client.set(key, JSON.stringify(storedObj));
+
+  return key;
 };
 
 export const retrievePlanGraph = async (parentKey) => {
